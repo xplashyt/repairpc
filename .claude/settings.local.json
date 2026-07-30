@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(foreach \\($id in 12712, 10044, 13408, 13300, 2972\\) { try { Stop-Process -Id $id -Force -ErrorAction Stop; \"Detenido PID $id\" } catch { \"PID $id ya no existe\" } })",
+      "PowerShell($p = Get-CimInstance Win32_Process -Filter \"Name='node.exe'\"; if \\($p\\) { $p | Select-Object ProcessId, CommandLine | Format-List } else { \"No quedan procesos node.exe\" }; \"--- Puertos 3000 / 3117 ---\"; $c = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,3117 }; if \\($c\\) { $c | Select-Object LocalPort, OwningProcess | Format-Table -AutoSize } else { \"Libres\" })"
+    ]
+  }
+}
