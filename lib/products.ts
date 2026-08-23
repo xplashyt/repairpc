@@ -17,6 +17,19 @@ export interface Guia {
  */
 export const guias: Guia[] = [
   {
+    id: "club",
+    nombre: "Únete al club",
+    resumen:
+      "Una opción de entrada para comenzar a cuidar tu computador con una guía práctica de bienvenida.",
+    priceCOP: 2000,
+    archivo: "guia-basica.pdf",
+    incluye: [
+      "Acceso inicial a GuíasPC",
+      "Guía básica de mantenimiento como material de bienvenida",
+      "Rutina práctica para comenzar a cuidar tu computador",
+    ],
+  },
+  {
     id: "guia-basica",
     nombre: "Guía de mantenimiento estándar",
     resumen:
@@ -37,7 +50,7 @@ export const guias: Guia[] = [
     nombre: "Guía completa de mantenimiento avanzado",
     resumen:
       "Todo lo de la guía estándar más el trabajo que normalmente le pagarías a un técnico.",
-    priceCOP: 74900,
+    priceCOP: 494900,
     archivo: "guia-pro.pdf",
     recomendada: true,
     incluye: [

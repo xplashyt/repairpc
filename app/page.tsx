@@ -19,16 +19,16 @@ export default function Home() {
         <Hero />
         <TrustBar />
 
-        <section id="guias" className="mx-auto max-w-5xl px-6 py-16">
+        <section id="guias" className="mx-auto max-w-6xl px-6 py-16">
           <h2 className="font-display text-2xl font-bold md:text-3xl">
             Elige tu guía
           </h2>
           <p className="mt-2 max-w-2xl text-sm text-niebla">
-            Las dos son un PDF que te llega al correo apenas se confirma el pago.
+            Las tres opciones incluyen un PDF que llega al correo apenas se confirma el pago.
             Pagas con tarjeta o Nequi aquí mismo, sin salir del sitio.
           </p>
 
-          <div className="mt-10 grid items-start gap-6 md:grid-cols-2">
+          <div className="mt-10 grid items-start gap-6 md:grid-cols-3">
             {guias.map((guia) => (
               <ProductCard key={guia.id} guia={guia} onSelect={setSeleccionada} />
             ))}
