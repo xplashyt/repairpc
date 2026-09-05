@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatCOP, type Guia } from "@/lib/products";
 import { buildReference } from "@/lib/orders";
+import { classifyDeclineReason } from "@/lib/payment-errors";
 import {
   detectBrand,
   formatCardNumber,
@@ -114,7 +115,8 @@ export default function CheckoutPanel({
       if (tx.status === "APPROVED") return setFase("aprobado");
 
       if (tx.status === "DECLINED" || tx.status === "ERROR" || tx.status === "VOIDED") {
-        setError(tx.statusMessage || null);
+        const clasificado = classifyDeclineReason(tx.statusMessage);
+        setError(`${clasificado.message} ${clasificado.hint ?? ""}`.trim());
         return setFase("rechazado");
       }
     }
@@ -174,13 +176,20 @@ export default function CheckoutPanel({
 
       if (data.status === "APPROVED") return setFase("aprobado");
       if (data.status === "DECLINED" || data.status === "ERROR") {
-        setError(data.statusMessage || null);
+        const clasificado = classifyDeclineReason(data.statusMessage);
+        setError(`${clasificado.message} ${clasificado.hint ?? ""}`.trim());
         return setFase("rechazado");
       }
 
       await esperarResultado(data.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Algo salió mal");
+      setError(
+        err instanceof TypeError
+          ? "No pudimos conectar con el servidor. Revisa tu conexión e intenta de nuevo."
+          : err instanceof Error
+            ? err.message
+            : "Algo salió mal"
+      );
       setFase("rechazado");
     }
   }

@@ -1,4 +1,5 @@
 import { wompiBaseUrl } from "./wompi-env";
+import { classifyGatewayError } from "./payment-errors";
 
 /**
  * Tokenización de tarjetas — se ejecuta SOLO en el navegador.
@@ -51,29 +52,51 @@ export interface CardToken {
 export async function tokenizeCard(card: CardInput): Promise<CardToken> {
   const publicKey = requirePublicKey();
 
-  const res = await fetch(`${wompiBaseUrl(publicKey)}/tokens/cards`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${publicKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      number: card.number.replace(/\s/g, ""),
-      exp_month: card.expMonth,
-      exp_year: card.expYear,
-      cvc: card.cvc,
-      card_holder: card.cardHolder,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${wompiBaseUrl(publicKey)}/tokens/cards`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${publicKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        number: card.number.replace(/\s/g, ""),
+        exp_month: card.expMonth,
+        exp_year: card.expYear,
+        cvc: card.cvc,
+        card_holder: card.cardHolder,
+      }),
+    });
+  } catch (err) {
+    console.error("No se pudo contactar a Wompi (tokenización):", err);
+    const classified = classifyGatewayError({ networkDown: true });
+    throw new Error(`${classified.message} ${classified.hint ?? ""}`.trim());
+  }
 
-  const body = await res.json().catch(() => null);
+  const raw = await res.text();
+  let body: { status?: string; data?: { id: string; brand: string; last_four: string }; error?: { type?: string; messages?: unknown } };
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    console.error(`Tokenización no devolvió JSON válido (status ${res.status}):`, raw.slice(0, 500));
+    const classified = classifyGatewayError({ httpStatus: res.status, nonJsonResponse: true });
+    throw new Error(`${classified.message} ${classified.hint ?? ""}`.trim());
+  }
 
-  if (!res.ok || body?.status !== "CREATED") {
-    const messages = body?.error?.messages;
-    const detalle = messages
-      ? Object.values(messages).flat().join(" ")
-      : "No pudimos validar los datos de la tarjeta.";
-    throw new Error(detalle);
+  if (!res.ok || body.status !== "CREATED" || !body.data) {
+    // Un mensaje de validación de Wompi (número inválido, CVC mal formado...)
+    // se conserva tal cual: viene de examinar los datos que se enviaron. Si
+    // no hay uno, es una falla de la pasarela, no de la tarjeta.
+    const messages = body.error?.messages;
+    if (messages) {
+      throw new Error(Object.values(messages).flat().join(" "));
+    }
+    const classified = classifyGatewayError({
+      httpStatus: res.status,
+      wompiErrorType: body.error?.type ?? null,
+    });
+    throw new Error(`${classified.message} ${classified.hint ?? ""}`.trim());
   }
 
   return {

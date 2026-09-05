@@ -1,5 +1,6 @@
 import { buildIntegritySignature } from "./wompi";
 import { wompiBaseUrl } from "./wompi-env";
+import { classifyGatewayError, type PaymentErrorCode } from "./payment-errors";
 
 export { wompiBaseUrl };
 
@@ -30,6 +31,21 @@ function serverConfig() {
   return { publicKey, privateKey, integritySecret, base: wompiBaseUrl(publicKey) };
 }
 
+/** Falla de la pasarela ya clasificada (red caída, bloqueo de seguridad, Wompi caído...). */
+export class GatewayError extends Error {
+  code: PaymentErrorCode;
+  constructor(code: PaymentErrorCode, message: string) {
+    super(message);
+    this.name = "GatewayError";
+    this.code = code;
+  }
+}
+
+function throwGatewayError(failure: Parameters<typeof classifyGatewayError>[0]): never {
+  const classified = classifyGatewayError(failure);
+  throw new GatewayError(classified.code, `${classified.message} ${classified.hint ?? ""}`.trim());
+}
+
 export interface AcceptanceTokens {
   acceptanceToken: string;
   acceptanceUrl: string;
@@ -45,15 +61,38 @@ export interface AcceptanceTokens {
 export async function getAcceptanceTokens(): Promise<AcceptanceTokens> {
   const { publicKey, base } = serverConfig();
 
-  const res = await fetch(`${base}/merchants/${publicKey}`, {
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    throw new Error(`Wompi /merchants respondió ${res.status}`);
+  let res: Response;
+  try {
+    res = await fetch(`${base}/merchants/${publicKey}`, { cache: "no-store" });
+  } catch (err) {
+    console.error("No se pudo contactar a Wompi (merchants):", err);
+    throwGatewayError({ networkDown: true });
   }
 
-  const { data } = await res.json();
+  const raw = await res.text();
+
+  if (!res.ok) {
+    console.error(`Wompi /merchants respondió ${res.status}:`, raw);
+    throwGatewayError({ httpStatus: res.status });
+  }
+
+  let body: {
+    data?: {
+      presigned_acceptance?: { acceptance_token: string; permalink: string };
+      presigned_personal_data_auth?: { acceptance_token: string; permalink: string };
+    };
+  };
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    console.error("Wompi /merchants no devolvió JSON válido:", raw.slice(0, 500));
+    throwGatewayError({ nonJsonResponse: true });
+  }
+
+  const data = body.data;
+  if (!data?.presigned_acceptance || !data?.presigned_personal_data_auth) {
+    throw new Error("Wompi no devolvió los tokens de aceptación.");
+  }
 
   return {
     acceptanceToken: data.presigned_acceptance.acceptance_token,
@@ -101,40 +140,62 @@ export async function createTransaction(
     integritySecret
   );
 
-  const res = await fetch(`${base}/transactions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${privateKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      acceptance_token: input.acceptanceToken,
-      accept_personal_auth: input.personalDataToken,
-      amount_in_cents: input.amountInCents,
-      currency: "COP",
-      customer_email: input.customerEmail,
-      reference: input.reference,
-      signature,
-      payment_method: input.paymentMethod,
-      customer_data: { full_name: input.customerFullName },
-      ...(input.customerIp ? { ip: input.customerIp } : {}),
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/transactions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${privateKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        acceptance_token: input.acceptanceToken,
+        accept_personal_auth: input.personalDataToken,
+        amount_in_cents: input.amountInCents,
+        currency: "COP",
+        customer_email: input.customerEmail,
+        reference: input.reference,
+        signature,
+        payment_method: input.paymentMethod,
+        customer_data: { full_name: input.customerFullName },
+        ...(input.customerIp ? { ip: input.customerIp } : {}),
+      }),
+    });
+  } catch (err) {
+    console.error("No se pudo contactar a Wompi (transactions):", err);
+    throwGatewayError({ networkDown: true });
+  }
 
-  const body = await res.json().catch(() => null);
+  const raw = await res.text();
+  let body: { data?: WompiTransaction; error?: { type?: string; messages?: unknown; reason?: string } };
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    console.error(`Wompi /transactions no devolvió JSON válido (status ${res.status}):`, raw.slice(0, 500));
+    throwGatewayError({ httpStatus: res.status, nonJsonResponse: true });
+  }
 
-  if (!res.ok) {
+  if (!res.ok || !body.data) {
     // El detalle crudo lleva nombres de campos internos de Wompi, útiles
     // para depurar pero no para mostrárselos al cliente.
     console.error("Wompi rechazó la transacción:", JSON.stringify(body));
 
-    const detalle = collectMessages(body?.error?.messages);
-    throw new Error(
-      detalle.join(" ") || body?.error?.reason || `Wompi respondió ${res.status}`
-    );
+    // Un mensaje de validación de Wompi (token vencido, firma inválida...) se
+    // conserva tal cual: es información concreta sobre lo que falló en la
+    // solicitud. Si no hay uno, la falla es de la pasarela y se clasifica
+    // por el status HTTP.
+    const details = collectMessages(body.error?.messages);
+    if (details.length > 0) {
+      throw new Error(details.join(" "));
+    }
+    if (body.error?.reason) {
+      throw new Error(body.error.reason);
+    }
+
+    throwGatewayError({ httpStatus: res.status, wompiErrorType: body.error?.type ?? null });
   }
 
-  return body.data as WompiTransaction;
+  return body.data;
 }
 
 /**
@@ -161,15 +222,30 @@ function collectMessages(node: unknown, out: string[] = []): string[] {
 export async function getTransaction(id: string): Promise<WompiTransaction> {
   const { publicKey, base } = serverConfig();
 
-  const res = await fetch(`${base}/transactions/${id}`, {
-    headers: { Authorization: `Bearer ${publicKey}` },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    throw new Error(`Wompi /transactions/${id} respondió ${res.status}`);
+  let res: Response;
+  try {
+    res = await fetch(`${base}/transactions/${id}`, {
+      headers: { Authorization: `Bearer ${publicKey}` },
+      cache: "no-store",
+    });
+  } catch (err) {
+    console.error("No se pudo contactar a Wompi (consulta de transacción):", err);
+    throw new Error("No pudimos consultar el estado del pago.");
   }
 
-  const { data } = await res.json();
-  return data as WompiTransaction;
+  const raw = await res.text();
+  let body: { data?: WompiTransaction };
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    console.error(`Wompi /transactions/${id} no devolvió JSON válido:`, raw.slice(0, 500));
+    throw new Error("No pudimos consultar el estado del pago.");
+  }
+
+  if (!res.ok || !body.data) {
+    console.error(`Wompi /transactions/${id} respondió ${res.status}`);
+    throw new Error("No pudimos consultar el estado del pago.");
+  }
+
+  return body.data;
 }
